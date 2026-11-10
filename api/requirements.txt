@@ -1,0 +1,6 @@
+# Runtime dependencies for the HTTP API only (see api/Dockerfile).
+# The rules engine, extractors and standards mapper use only the standard library.
+fastapi==0.162.4
+uvicorn==0.54.0
+anthropic==2.8.0
+pydantic==2.14.3

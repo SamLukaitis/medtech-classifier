@@ -294,6 +294,76 @@ and `packages.txt` (the Tesseract system dependency) at the repo root
 are both picked up with no further config. `.streamlit/config.toml` sets
 the dark default theme.
 
+## Phase 5: public API, LLM extraction and a browser copy (done)
+
+Live demo: the "MDR classifier" section of
+<https://samlukaitis.github.io/portfolio/#mdr>, backed by an API on Railway.
+
+- `api/main.py` - FastAPI service. `POST /classify` takes a free-text
+  description (and optionally one image); `POST /classify/attributes`
+  takes structured attributes and never touches an LLM.
+- `api/llm_extractor.py` - `LLMExtractor`, a second implementation of the
+  `Extractor` interface, backed by the Claude API. **The model only fills
+  in `DeviceAttributes`.** Its output is constrained by a JSON schema
+  generated from the dataclass, which has no field for a class, and any
+  value outside the known enums falls back to the default. The class is
+  then computed by the same rules engine as every other path
+  (`tests/test_api.py::test_llm_output_cannot_inject_a_class`).
+- **Never fails because the LLM is off.** With no API key, a spent cap,
+  a used-up quota or an API error, the request falls back to the keyword
+  extractor and the response says which extractor was used and why.
+- `api/limits.py` - protection for a public endpoint: per-IP sliding
+  window rate limits (8/minute, 120/day), a separate LLM quota per IP
+  and globally, hard daily and monthly USD caps on LLM spend computed
+  from reported token usage (worst-case cost is reserved before each
+  call, so concurrent requests cannot overshoot), a 2,000-character
+  description limit, a request-size limit, image type and size checks,
+  and CORS restricted to the portfolio origin. The key is read from the
+  environment only.
+- `web/mdr-engine.js` - a JavaScript port of the rules engine, standards
+  mapper, pathway and class-driver analysis, so the demo works with no
+  server at all. `tests/test_js_parity.py` runs it under Node against
+  6,000 random devices and requires output identical to the Python
+  engine, including every rule's deciding clause and the pathway text.
+
+Deploy: `railway up` with `RAILWAY_DOCKERFILE_PATH=api/Dockerfile`. Set
+`ANTHROPIC_API_KEY` on the service to turn on LLM extraction; see the
+docstring in `api/main.py` for the other variables (`LLM_MODEL`,
+`LLM_DAILY_CAP_USD`, `LLM_MONTHLY_CAP_USD`, `ALLOWED_ORIGINS`, ...).
+
+Run locally:
+
+```bash
+pip install -r api/requirements.txt
+uvicorn api.main:app --reload
+```
+
+## Phase 6: depth (done)
+
+- **Clause-level audit trail.** Every `RuleOutcome` now carries
+  `matched_clauses`: the wording of the specific clause(s) of the rule
+  that produced its class ("is a total or partial joint replacement"),
+  not only the rule number.
+- **Two corrections found by re-reading the rule text.** Rule 15 says
+  "implantable or long term invasive devices"; the engine had only
+  counted *surgically* invasive ones, so an intrauterine device came out
+  IIb instead of III. Rule 13 ("all other active devices") now applies
+  to any active device that Rules 9-12 leave unclassified, instead of
+  relying on the extractor to pick an "other" bucket.
+- `regulatory_pathway/` - what the class triggers under the MDR: the
+  Article 52 conformity assessment route, notified body involvement
+  (including the limited Is/Im/Ir case), clinical investigation and
+  Article 54 expert panel triggers, SSCP, implant card, PSUR or PMS
+  report frequency, and the Annex IX consultations for medicinal
+  substances and tissues. Summaries are paraphrases with article-level
+  citations, not verbatim text like the rules.
+- `rules_engine/sensitivity.py` - class drivers: the device is
+  re-classified with each stated attribute removed in turn, to show
+  which facts the class depends on.
+
+396 tests in total across the engine, extractors, standards mapper,
+pathway, API, browser parity and UI.
+
 ## Regulatory grounding
 
 Every rule was written against text fetched directly from primary and

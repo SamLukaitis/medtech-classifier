@@ -308,6 +308,9 @@ class RuleOutcome:
     source_citation: str
     ambiguous: bool = False
     ambiguous_note: Optional[str] = None
+    # Wording of the specific clause(s) of the rule that produced device_class
+    # (empty for single-clause rules, where the rationale already says it).
+    matched_clauses: list[str] = field(default_factory=list)
 
 
 @dataclass
