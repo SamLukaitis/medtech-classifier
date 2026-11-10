@@ -17,7 +17,7 @@ dev = ["pytest", "coverage"]
 ui = ["streamlit>=1.61", "pypdf>=6.0", "python-docx>=1.2", "pytesseract>=0.3.13", "Pillow>=11.0"]
 
 [tool.setuptools.packages.find]
-include = ["rules_engine*", "extraction*", "standards_mapper*", "ui*"]
+include = ["rules_engine*", "extraction*", "standards_mapper*", "regulatory_pathway*", "api*", "ui*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

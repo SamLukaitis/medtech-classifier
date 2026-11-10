@@ -169,6 +169,7 @@ def _result_to_dict(
             "source_citation": o.source_citation,
             "ambiguous": o.ambiguous,
             "ambiguous_note": o.ambiguous_note,
+            "matched_clauses": o.matched_clauses,
         }
 
     return {

@@ -60,21 +60,39 @@ _ORAL_EAR_NASAL = {
 
 
 def _evaluate_candidates(
-    candidates: list[tuple[bool, DeviceClass]]
+    candidates: list
 ) -> Optional[DeviceClass]:
     """Annex VIII 3.5: among all triggered candidates, the highest wins.
 
     Use this for rules whose clauses are independent/parallel (no single
     clause is a "default" that only applies when nothing else does).
     """
-    matched = [cls for condition, cls in candidates if condition]
+    matched = [c[1] for c in candidates if c[0]]
     return highest(*matched) if matched else None
+
+
+def _clauses(candidates: list, result: Optional[DeviceClass]) -> list[str]:
+    """The wording of every matched clause that produced the rule's final
+    class - i.e. *which part* of the rule decided it, for the audit trail."""
+    if result is None:
+        return []
+    seen: list[str] = []
+    for c in candidates:
+        if c[0] and c[1] == result and len(c) > 2 and c[2] not in seen:
+            seen.append(c[2])
+    return seen
+
+
+def _base_clauses(gate: bool, exceptions: list, result: Optional[DeviceClass], base_label: str) -> list[str]:
+    if not gate or result is None:
+        return []
+    return _clauses(exceptions, result) or [base_label]
 
 
 def _evaluate_with_base(
     gate: bool,
     base_class: DeviceClass,
-    exceptions: list[tuple[bool, DeviceClass]],
+    exceptions: list,
 ) -> Optional[DeviceClass]:
     """For rules drafted as "classified as BASE unless X, in which case Y":
     a matched exception replaces the base outcome, per the literal
@@ -91,7 +109,7 @@ def _evaluate_with_base(
     """
     if not gate:
         return None
-    matched = [cls for condition, cls in exceptions if condition]
+    matched = [e[1] for e in exceptions if e[0]]
     return highest(*matched) if matched else base_class
 
 
@@ -158,11 +176,11 @@ class Rule2(ClassificationRule):
         )
         catch_all = gate and not (connected_to_active or blood_bag or blood_organ_storage)
 
-        candidates: list[tuple[bool, DeviceClass]] = [
-            (connected_to_active, DeviceClass.IIA),
-            (blood_organ_storage, DeviceClass.IIA),
-            (blood_bag, DeviceClass.IIB),
-            (catch_all, DeviceClass.I),
+        candidates: list[tuple[bool, DeviceClass, str]] = [
+            (connected_to_active, DeviceClass.IIA, "may be connected to a Class IIa, IIb or III active device"),
+            (blood_organ_storage, DeviceClass.IIA, "channels or stores blood or other body liquids, or stores organs, cells or tissues"),
+            (blood_bag, DeviceClass.IIB, "is a blood bag"),
+            (catch_all, DeviceClass.I, "all other cases"),
         ]
         result = _evaluate_candidates(candidates)
         return RuleOutcome(
@@ -177,6 +195,7 @@ class Rule2(ClassificationRule):
                 else "Device is not a non-invasive channelling/storage device for eventual infusion/administration; Rule 2 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
         )
 
 
@@ -212,20 +231,18 @@ class Rule3(ClassificationRule):
         modifies = non_invasive and device.modifies_biological_or_chemical_composition
         in_vitro = non_invasive and device.in_vitro_direct_contact_with_cells_tissues_organs_or_embryos
 
-        candidates: list[tuple[bool, DeviceClass]] = [
+        candidates: list[tuple[bool, DeviceClass, str]] = [
             (
                 modifies
                 and device.modification_treatment_type
                 == ModificationTreatmentType.FILTRATION_CENTRIFUGATION_GAS_OR_HEAT_EXCHANGE,
-                DeviceClass.IIA,
-            ),
+                DeviceClass.IIA, "the treatment consists of filtration, centrifugation or exchange of gas or heat"),
             (
                 modifies
                 and device.modification_treatment_type
                 != ModificationTreatmentType.FILTRATION_CENTRIFUGATION_GAS_OR_HEAT_EXCHANGE,
-                DeviceClass.IIB,
-            ),
-            (in_vitro, DeviceClass.III),
+                DeviceClass.IIB, "modifies the biological or chemical composition of tissues, cells, blood or other body liquids"),
+            (in_vitro, DeviceClass.III, "substance used in vitro in direct contact with human cells, tissues, organs or embryos"),
         ]
         result = _evaluate_candidates(candidates)
         applies = modifies or in_vitro
@@ -242,6 +259,7 @@ class Rule3(ClassificationRule):
                 else "Device does not modify biological/chemical composition and is not an in-vitro substance device; Rule 3 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
         )
 
 
@@ -287,23 +305,20 @@ class Rule4(ClassificationRule):
         # not an invasiveness check.
         gate = device.contacts_injured_skin_or_mucous_membrane
 
-        candidates: list[tuple[bool, DeviceClass]] = [
+        candidates: list[tuple[bool, DeviceClass, str]] = [
             (
                 gate
                 and device.wound_contact_purpose
                 == WoundContactPurpose.MECHANICAL_BARRIER_COMPRESSION_OR_ABSORPTION,
-                DeviceClass.I,
-            ),
+                DeviceClass.I, "used as a mechanical barrier, for compression or for absorption of exudates"),
             (
                 gate
                 and device.wound_contact_purpose
                 == WoundContactPurpose.BREACHED_DERMIS_SECONDARY_INTENT_HEALING,
-                DeviceClass.IIB,
-            ),
+                DeviceClass.IIB, "principally for wounds that have breached the dermis and can only heal by secondary intent"),
             (
                 gate and device.wound_contact_purpose == WoundContactPurpose.MANAGE_MICROENVIRONMENT,
-                DeviceClass.IIA,
-            ),
+                DeviceClass.IIA, "principally manages the micro-environment of the wound"),
             (
                 gate
                 and device.wound_contact_purpose
@@ -312,8 +327,7 @@ class Rule4(ClassificationRule):
                     WoundContactPurpose.BREACHED_DERMIS_SECONDARY_INTENT_HEALING,
                     WoundContactPurpose.MANAGE_MICROENVIRONMENT,
                 ),
-                DeviceClass.IIA,
-            ),
+                DeviceClass.IIA, "all other cases"),
         ]
         result = _evaluate_candidates(candidates)
         return RuleOutcome(
@@ -327,6 +341,7 @@ class Rule4(ClassificationRule):
                 else "Device does not contact injured skin or mucous membrane; Rule 4 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
         )
 
 
@@ -364,30 +379,26 @@ class Rule5(ClassificationRule):
             DeviceClass.III,
         )
 
-        candidates: list[tuple[bool, DeviceClass]] = [
-            (duration_gate and device.duration == Duration.TRANSIENT, DeviceClass.I),
+        candidates: list[tuple[bool, DeviceClass, str]] = [
+            (duration_gate and device.duration == Duration.TRANSIENT, DeviceClass.I, "transient use"),
             (
                 duration_gate and device.duration == Duration.SHORT_TERM and orifice_exempt,
-                DeviceClass.I,
-            ),
+                DeviceClass.I, "short-term use in the oral cavity, an ear canal or the nasal cavity"),
             (
                 duration_gate and device.duration == Duration.SHORT_TERM and not orifice_exempt,
-                DeviceClass.IIA,
-            ),
+                DeviceClass.IIA, "short-term use"),
             (
                 duration_gate
                 and device.duration == Duration.LONG_TERM
                 and orifice_exempt
                 and not device.liable_to_be_absorbed_by_mucous_membrane,
-                DeviceClass.IIA,
-            ),
+                DeviceClass.IIA, "long-term use in the oral cavity, an ear canal or the nasal cavity, and not liable to be absorbed by the mucous membrane"),
             (
                 duration_gate
                 and device.duration == Duration.LONG_TERM
                 and not (orifice_exempt and not device.liable_to_be_absorbed_by_mucous_membrane),
-                DeviceClass.IIB,
-            ),
-            (connected_to_higher_active, DeviceClass.IIA),
+                DeviceClass.IIB, "long-term use"),
+            (connected_to_higher_active, DeviceClass.IIA, "intended for connection to a Class IIa, IIb or III active device"),
         ]
         result = _evaluate_candidates(candidates)
         applies = duration_gate or connected_to_higher_active
@@ -403,6 +414,7 @@ class Rule5(ClassificationRule):
                 else "Device is not a non-surgical body-orifice-invasive device (or Rule 6-8 covers it instead); Rule 5 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
         )
 
 
@@ -435,19 +447,17 @@ class Rule6(ClassificationRule):
             and device.duration == Duration.TRANSIENT
             and not device.is_implantable
         )
-        exceptions: list[tuple[bool, DeviceClass]] = [
-            (device.contacts_heart_or_central_circulatory_system, DeviceClass.III),
-            (device.is_reusable_surgical_instrument, DeviceClass.I),
+        exceptions: list[tuple[bool, DeviceClass, str]] = [
+            (device.contacts_heart_or_central_circulatory_system, DeviceClass.III, "intended to control, diagnose, monitor or correct a defect of the heart or central circulatory system through direct contact"),
+            (device.is_reusable_surgical_instrument, DeviceClass.I, "is a reusable surgical instrument"),
             (
                 device.contacts_heart_or_central_circulatory_system or device.contacts_central_nervous_system,
-                DeviceClass.III,
-            ),
-            (device.supplies_ionising_radiation, DeviceClass.IIB),
-            (device.has_biological_effect_or_wholly_mainly_absorbed, DeviceClass.IIB),
+                DeviceClass.III, "direct contact with the heart, the central circulatory system or the central nervous system"),
+            (device.supplies_ionising_radiation, DeviceClass.IIB, "supplies energy in the form of ionising radiation"),
+            (device.has_biological_effect_or_wholly_mainly_absorbed, DeviceClass.IIB, "has a biological effect or is wholly or mainly absorbed"),
             (
                 device.administers_medicinal_product and device.administration_potentially_hazardous,
-                DeviceClass.IIB,
-            ),
+                DeviceClass.IIB, "administers medicinal products by a delivery system in a potentially hazardous manner"),
         ]
         result = _evaluate_with_base(gate, DeviceClass.IIA, exceptions)
         return RuleOutcome(
@@ -461,6 +471,7 @@ class Rule6(ClassificationRule):
                 else "Device is not a non-implantable, transient-use surgically invasive device; Rule 6 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_base_clauses(gate, exceptions, result, "general rule for transient-use surgically invasive devices"),
         )
 
 
@@ -491,19 +502,17 @@ class Rule7(ClassificationRule):
             and device.duration == Duration.SHORT_TERM
             and not device.is_implantable
         )
-        exceptions: list[tuple[bool, DeviceClass]] = [
-            (device.contacts_heart_or_central_circulatory_system, DeviceClass.III),
+        exceptions: list[tuple[bool, DeviceClass, str]] = [
+            (device.contacts_heart_or_central_circulatory_system, DeviceClass.III, "intended to control, diagnose, monitor or correct a defect of the heart or central circulatory system through direct contact"),
             (
                 device.contacts_heart_or_central_circulatory_system or device.contacts_central_nervous_system,
-                DeviceClass.III,
-            ),
-            (device.supplies_ionising_radiation, DeviceClass.IIB),
-            (device.has_biological_effect_or_wholly_mainly_absorbed, DeviceClass.III),
+                DeviceClass.III, "direct contact with the heart, the central circulatory system or the central nervous system"),
+            (device.supplies_ionising_radiation, DeviceClass.IIB, "supplies energy in the form of ionising radiation"),
+            (device.has_biological_effect_or_wholly_mainly_absorbed, DeviceClass.III, "has a biological effect or is wholly or mainly absorbed"),
             (
                 device.undergoes_chemical_change_in_body and not device.placed_in_teeth,
-                DeviceClass.IIB,
-            ),
-            (device.administers_medicinal_product, DeviceClass.IIB),
+                DeviceClass.IIB, "undergoes chemical change in the body (and is not placed in the teeth)"),
+            (device.administers_medicinal_product, DeviceClass.IIB, "administers medicines"),
         ]
         result = _evaluate_with_base(gate, DeviceClass.IIA, exceptions)
         return RuleOutcome(
@@ -517,6 +526,7 @@ class Rule7(ClassificationRule):
                 else "Device is not a non-implantable, short-term-use surgically invasive device; Rule 7 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_base_clauses(gate, exceptions, result, "general rule for short-term surgically invasive devices"),
         )
 
 
@@ -584,22 +594,20 @@ class Rule8(ClassificationRule):
         spinal_exception = (
             device.is_spinal_disc_replacement_or_contacts_spinal_column and not device.is_ancillary_component
         )
-        exceptions: list[tuple[bool, DeviceClass]] = [
-            (device.placed_in_teeth, DeviceClass.IIA),
+        exceptions: list[tuple[bool, DeviceClass, str]] = [
+            (device.placed_in_teeth, DeviceClass.IIA, "placed in the teeth"),
             (
                 device.contacts_heart_or_central_circulatory_system or device.contacts_central_nervous_system,
-                DeviceClass.III,
-            ),
-            (device.has_biological_effect_or_wholly_mainly_absorbed, DeviceClass.III),
+                DeviceClass.III, "direct contact with the heart, the central circulatory system or the central nervous system"),
+            (device.has_biological_effect_or_wholly_mainly_absorbed, DeviceClass.III, "has a biological effect or is wholly or mainly absorbed"),
             (
                 device.undergoes_chemical_change_in_body and not device.placed_in_teeth,
-                DeviceClass.III,
-            ),
-            (device.administers_medicinal_product, DeviceClass.III),
-            (device.is_active_implantable_or_accessory, DeviceClass.III),
-            (device.is_breast_implant_or_surgical_mesh, DeviceClass.III),
-            (joint_exception, DeviceClass.III),
-            (spinal_exception, DeviceClass.III),
+                DeviceClass.III, "undergoes chemical change in the body (and is not placed in the teeth)"),
+            (device.administers_medicinal_product, DeviceClass.III, "administers medicinal products"),
+            (device.is_active_implantable_or_accessory, DeviceClass.III, "is an active implantable device or its accessory"),
+            (device.is_breast_implant_or_surgical_mesh, DeviceClass.III, "is a breast implant or surgical mesh"),
+            (joint_exception, DeviceClass.III, "is a total or partial joint replacement"),
+            (spinal_exception, DeviceClass.III, "is a spinal disc replacement or an implant in contact with the spinal column"),
         ]
         result = _evaluate_with_base(gate, DeviceClass.IIB, exceptions)
         ambiguous = gate and (
@@ -616,6 +624,7 @@ class Rule8(ClassificationRule):
                 else "Device is not implantable and not a long-term surgically invasive device; Rule 8 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_base_clauses(gate, exceptions, result, "general rule for implantable and long-term surgically invasive devices"),
             ambiguous=ambiguous,
             ambiguous_note=(
                 "Device is flagged as an 'ancillary component' (screw, wedge, "
@@ -668,12 +677,12 @@ class Rule9(ClassificationRule):
         emits_therapeutic_radiation = device.is_active and device.emits_ionising_radiation_therapeutic
         controls_active_implantable = device.is_active and device.controls_monitors_or_influences_active_implantable_device
 
-        candidates: list[tuple[bool, DeviceClass]] = [
-            (energy_gate, DeviceClass.IIA),
-            (energy_gate and device.energy_exchange_potentially_hazardous, DeviceClass.IIB),
-            (controls_iib, DeviceClass.IIB),
-            (emits_therapeutic_radiation, DeviceClass.IIB),
-            (controls_active_implantable, DeviceClass.III),
+        candidates: list[tuple[bool, DeviceClass, str]] = [
+            (energy_gate, DeviceClass.IIA, "active therapeutic device that administers or exchanges energy"),
+            (energy_gate and device.energy_exchange_potentially_hazardous, DeviceClass.IIB, "may administer or exchange energy in a potentially hazardous way"),
+            (controls_iib, DeviceClass.IIB, "controls, monitors or directly influences a Class IIb active therapeutic device"),
+            (emits_therapeutic_radiation, DeviceClass.IIB, "emits ionising radiation for therapeutic purposes"),
+            (controls_active_implantable, DeviceClass.III, "controls, monitors or directly influences an active implantable device"),
         ]
         result = _evaluate_candidates(candidates)
         applies = energy_gate or controls_iib or emits_therapeutic_radiation or controls_active_implantable
@@ -690,6 +699,7 @@ class Rule9(ClassificationRule):
                 else "Device is not an active therapeutic energy device covered by Rule 9; Rule 9 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
         )
 
 
@@ -738,13 +748,13 @@ class Rule10(ClassificationRule):
         direct_diag = diag_gate and device.diagnostic_allows_direct_diagnosis_or_monitoring_of_vital_physiological_processes
         immediate_danger = direct_diag and device.diagnostic_variation_could_cause_immediate_danger
 
-        candidates: list[tuple[bool, DeviceClass]] = [
-            (energy_absorbed and not illumination_only, DeviceClass.IIA),
-            (illumination_only, DeviceClass.I),
-            (diag_gate and device.diagnostic_images_in_vivo_radiopharmaceutical_distribution, DeviceClass.IIA),
-            (direct_diag and not immediate_danger, DeviceClass.IIA),
-            (immediate_danger, DeviceClass.IIB),
-            (radiology_gate, DeviceClass.IIB),
+        candidates: list[tuple[bool, DeviceClass, str]] = [
+            (energy_absorbed and not illumination_only, DeviceClass.IIA, "supplies energy that is absorbed by the human body"),
+            (illumination_only, DeviceClass.I, "only illuminates the patient's body in the visible spectrum"),
+            (diag_gate and device.diagnostic_images_in_vivo_radiopharmaceutical_distribution, DeviceClass.IIA, "images the in vivo distribution of radiopharmaceuticals"),
+            (direct_diag and not immediate_danger, DeviceClass.IIA, "allows direct diagnosis or monitoring of vital physiological processes"),
+            (immediate_danger, DeviceClass.IIB, "monitors vital physiological parameters whose variations could result in immediate danger to the patient"),
+            (radiology_gate, DeviceClass.IIB, "emits ionising radiation for diagnostic or interventional radiology"),
         ]
         result = _evaluate_candidates(candidates)
         applies = diag_gate or radiology_gate
@@ -759,6 +769,7 @@ class Rule10(ClassificationRule):
                 else "Device is not an active diagnostic/monitoring or diagnostic-radiology device; Rule 10 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
         )
 
 
@@ -854,31 +865,26 @@ class Rule11(ClassificationRule):
         monitoring = device.software_monitors_physiological_processes
         other_software = not decision_support and not monitoring
 
-        candidates: list[tuple[bool, DeviceClass]] = [
+        candidates: list[tuple[bool, DeviceClass, str]] = [
             (
                 decision_support and device.software_decision_impact == SoftwareDecisionImpact.OTHER_IMPACT,
-                DeviceClass.IIA,
-            ),
+                DeviceClass.IIA, "provides information used to take decisions with diagnostic or therapeutic purposes"),
             (
                 decision_support
                 and device.software_decision_impact
                 == SoftwareDecisionImpact.SERIOUS_DETERIORATION_OR_SURGICAL_INTERVENTION,
-                DeviceClass.IIB,
-            ),
+                DeviceClass.IIB, "those decisions may cause a serious deterioration of health or a surgical intervention"),
             (
                 decision_support
                 and device.software_decision_impact == SoftwareDecisionImpact.DEATH_OR_IRREVERSIBLE_DETERIORATION,
-                DeviceClass.III,
-            ),
+                DeviceClass.III, "those decisions may cause death or an irreversible deterioration of health"),
             (
                 monitoring and not device.software_monitors_vital_parameters_with_immediate_danger_potential,
-                DeviceClass.IIA,
-            ),
+                DeviceClass.IIA, "monitors physiological processes"),
             (
                 monitoring and device.software_monitors_vital_parameters_with_immediate_danger_potential,
-                DeviceClass.IIB,
-            ),
-            (other_software, DeviceClass.I),
+                DeviceClass.IIB, "monitors vital physiological parameters whose variations could result in immediate danger to the patient"),
+            (other_software, DeviceClass.I, "all other software"),
         ]
         result = _evaluate_candidates(candidates)
         severity_flagged = decision_support and device.software_decision_impact in (
@@ -895,6 +901,7 @@ class Rule11(ClassificationRule):
                 f"physiological processes: {monitoring}."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
             ambiguous=severity_flagged,
             ambiguous_note=(
                 "Classifying decision-support software by the severity of harm "
@@ -939,9 +946,9 @@ class Rule12(ClassificationRule):
 
     def evaluate(self, device: DeviceAttributes) -> RuleOutcome:
         gate = device.is_active and device.administers_or_removes_substances_to_from_body
-        candidates: list[tuple[bool, DeviceClass]] = [
-            (gate and not device.administration_or_removal_potentially_hazardous, DeviceClass.IIA),
-            (gate and device.administration_or_removal_potentially_hazardous, DeviceClass.IIB),
+        candidates: list[tuple[bool, DeviceClass, str]] = [
+            (gate and not device.administration_or_removal_potentially_hazardous, DeviceClass.IIA, "administers or removes medicinal products, body liquids or other substances"),
+            (gate and device.administration_or_removal_potentially_hazardous, DeviceClass.IIB, "does so in a potentially hazardous manner"),
         ]
         result = _evaluate_candidates(candidates)
         return RuleOutcome(
@@ -955,6 +962,7 @@ class Rule12(ClassificationRule):
                 else "Device does not administer or remove substances to/from the body; Rule 12 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
         )
 
 
@@ -963,14 +971,14 @@ class Rule13(ClassificationRule):
 
     "All other active devices are classified as class I." (Annex VIII, 6.5)
 
-    Modelling note: the legal text defines this as "not covered by Rules
-    9-12", which is a property of the *device* as a whole, not something
-    a single rule class can determine on its own. This implementation
-    gates on ``active_type == ActiveDeviceType.OTHER_ACTIVE``, an explicit
-    bucket in the attribute model reserved for exactly this residual
-    case. The extractor (or a human filling in the CLI harness) is
-    responsible for only setting this bucket when Rules 9-12 genuinely do
-    not describe the device.
+    "Other" means not classified by the preceding active-device rules
+    (9-12). This is evaluated directly: the rule applies to any active
+    device for which none of Rules 9, 10, 11 and 12 produces a class. It
+    therefore also catches an active therapeutic or diagnostic device
+    that matches none of the specific indents of Rule 9 or 10, which the
+    regulation leaves at Class I. ``ActiveDeviceType.OTHER_ACTIVE`` is
+    simply the type an extractor uses when the device is neither
+    therapeutic nor diagnostic.
 
     Real worked examples confirmed against MDCG 2021-24 Rev.1, pages
     48-49 (docs/legal_sources/mdcg_2021-24_rule_13_examples.txt): electric
@@ -982,17 +990,20 @@ class Rule13(ClassificationRule):
     source_citation = f"{_SOURCE_BASE}, Section 6.5"
 
     def evaluate(self, device: DeviceAttributes) -> RuleOutcome:
-        applies = device.is_active and device.active_type == ActiveDeviceType.OTHER_ACTIVE
+        covered_by_9_to_12 = any(
+            rule().evaluate(device).device_class is not None for rule in (Rule9, Rule10, Rule11, Rule12)
+        )
+        applies = device.is_active and not covered_by_9_to_12
         return RuleOutcome(
             rule_id=self.rule_id,
             applies=applies,
             device_class=DeviceClass.I if applies else None,
             rationale=(
-                "Active device not falling under Rules 9-12 (therapeutic "
+                "Active device not classified by Rules 9-12 (therapeutic "
                 "energy exchange, diagnosis/monitoring, software, or "
                 "substance administration/removal)."
                 if applies
-                else "Device is not an active device in the residual 'other' bucket; Rule 13 does not apply."
+                else "Device is not active, or is already classified by one of Rules 9-12; Rule 13 does not apply."
             ),
             source_citation=self.source_citation,
         )
@@ -1053,12 +1064,15 @@ class Rule15(ClassificationRule):
 
     def evaluate(self, device: DeviceAttributes) -> RuleOutcome:
         gate = device.is_contraceptive_or_sti_prevention
+        # "implantable or long term invasive devices": the text says invasive,
+        # not surgically invasive, so a long-term body-orifice device such as
+        # an intrauterine device is Class III here.
         long_term_or_implantable = device.is_implantable or (
-            device.invasiveness == Invasiveness.SURGICALLY_INVASIVE and device.duration == Duration.LONG_TERM
+            device.invasiveness != Invasiveness.NON_INVASIVE and device.duration == Duration.LONG_TERM
         )
-        candidates: list[tuple[bool, DeviceClass]] = [
-            (gate and not long_term_or_implantable, DeviceClass.IIB),
-            (gate and long_term_or_implantable, DeviceClass.III),
+        candidates: list[tuple[bool, DeviceClass, str]] = [
+            (gate and not long_term_or_implantable, DeviceClass.IIB, "used for contraception or prevention of sexually transmitted diseases"),
+            (gate and long_term_or_implantable, DeviceClass.III, "is an implantable or long-term invasive device"),
         ]
         result = _evaluate_candidates(candidates)
         return RuleOutcome(
@@ -1072,6 +1086,7 @@ class Rule15(ClassificationRule):
                 else "Device is not a contraception/STI-prevention device; Rule 15 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
         )
 
 
@@ -1104,10 +1119,10 @@ class Rule16(ClassificationRule):
 
     def evaluate(self, device: DeviceAttributes) -> RuleOutcome:
         target = device.disinfect_clean_target
-        candidates: list[tuple[bool, DeviceClass]] = [
-            (target == DisinfectCleanTarget.CONTACT_LENSES, DeviceClass.IIB),
-            (target == DisinfectCleanTarget.INVASIVE_DEVICE_END_POINT, DeviceClass.IIB),
-            (target == DisinfectCleanTarget.OTHER_MEDICAL_DEVICE, DeviceClass.IIA),
+        candidates: list[tuple[bool, DeviceClass, str]] = [
+            (target == DisinfectCleanTarget.CONTACT_LENSES, DeviceClass.IIB, "disinfects, cleans, rinses or hydrates contact lenses"),
+            (target == DisinfectCleanTarget.INVASIVE_DEVICE_END_POINT, DeviceClass.IIB, "disinfecting solution or washer-disinfector for invasive devices, as the end point of processing"),
+            (target == DisinfectCleanTarget.OTHER_MEDICAL_DEVICE, DeviceClass.IIA, "disinfects or sterilises medical devices"),
         ]
         result = _evaluate_candidates(candidates)
         applies = result is not None
@@ -1126,6 +1141,7 @@ class Rule16(ClassificationRule):
                 )
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
         )
 
 
@@ -1242,13 +1258,12 @@ class Rule19(ClassificationRule):
     def evaluate(self, device: DeviceAttributes) -> RuleOutcome:
         gate = device.contains_nanomaterial
         exposure = device.nanomaterial_internal_exposure_potential
-        candidates: list[tuple[bool, DeviceClass]] = [
+        candidates: list[tuple[bool, DeviceClass, str]] = [
             (
                 gate and exposure in (NanomaterialExposurePotential.HIGH, NanomaterialExposurePotential.MEDIUM),
-                DeviceClass.III,
-            ),
-            (gate and exposure == NanomaterialExposurePotential.LOW, DeviceClass.IIB),
-            (gate and exposure == NanomaterialExposurePotential.NEGLIGIBLE, DeviceClass.IIA),
+                DeviceClass.III, "high or medium potential for internal exposure"),
+            (gate and exposure == NanomaterialExposurePotential.LOW, DeviceClass.IIB, "low potential for internal exposure"),
+            (gate and exposure == NanomaterialExposurePotential.NEGLIGIBLE, DeviceClass.IIA, "negligible potential for internal exposure"),
         ]
         result = _evaluate_candidates(candidates)
         return RuleOutcome(
@@ -1262,6 +1277,7 @@ class Rule19(ClassificationRule):
                 else "Device does not incorporate or consist of nanomaterial; Rule 19 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
         )
 
 
@@ -1293,9 +1309,9 @@ class Rule20(ClassificationRule):
             device.invasiveness == Invasiveness.INVASIVE_BODY_ORIFICE
             and device.administers_medicinal_product_by_inhalation
         )
-        candidates: list[tuple[bool, DeviceClass]] = [
-            (gate and not device.inhalation_essential_impact_or_life_threatening, DeviceClass.IIA),
-            (gate and device.inhalation_essential_impact_or_life_threatening, DeviceClass.IIB),
+        candidates: list[tuple[bool, DeviceClass, str]] = [
+            (gate and not device.inhalation_essential_impact_or_life_threatening, DeviceClass.IIA, "administers medicinal products by inhalation"),
+            (gate and device.inhalation_essential_impact_or_life_threatening, DeviceClass.IIB, "its mode of action has an essential impact on the medicinal product, or it treats life-threatening conditions"),
         ]
         result = _evaluate_candidates(candidates)
         return RuleOutcome(
@@ -1309,6 +1325,7 @@ class Rule20(ClassificationRule):
                 else "Device does not administer medicinal products by inhalation via a body orifice; Rule 20 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
         )
 
 
@@ -1352,14 +1369,13 @@ class Rule21(ClassificationRule):
             and device.applied_to_skin_or_nasal_oral_cavity_to_pharynx
             and not device.systemically_absorbed
         )
-        candidates: list[tuple[bool, DeviceClass]] = [
-            (gate and device.systemically_absorbed, DeviceClass.III),
+        candidates: list[tuple[bool, DeviceClass, str]] = [
+            (gate and device.systemically_absorbed, DeviceClass.III, "systemically absorbed in order to achieve the intended purpose"),
             (
                 gate and device.achieves_purpose_in_stomach_or_lower_gi_tract and device.systemically_absorbed,
-                DeviceClass.III,
-            ),
-            (local_action_only, DeviceClass.IIA),
-            (gate and not local_action_only and not device.systemically_absorbed, DeviceClass.IIB),
+                DeviceClass.III, "achieves its purpose in the stomach or lower gastrointestinal tract and is systemically absorbed"),
+            (local_action_only, DeviceClass.IIA, "applied to the skin, or in the nasal or oral cavity as far as the pharynx, and achieves its purpose there"),
+            (gate and not local_action_only and not device.systemically_absorbed, DeviceClass.IIB, "all other cases"),
         ]
         result = _evaluate_candidates(candidates)
         return RuleOutcome(
@@ -1374,6 +1390,7 @@ class Rule21(ClassificationRule):
                 else "Device is not a substance-based absorbed/dispersed device; Rule 21 does not apply."
             ),
             source_citation=self.source_citation,
+            matched_clauses=_clauses(candidates, result),
         )
 
 
